@@ -1,0 +1,1 @@
+Changed footprint ESP32S3 from 'fab:SeeedStudio_XIAO_ESP32S3' to 'fab:SeeedStudio_XIAO_ESP32S3': : OK
