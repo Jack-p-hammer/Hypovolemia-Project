@@ -528,7 +528,7 @@
       "plot": "",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": "",
+      "step": "../Hypo CAD/HypoV PCB.step",
       "svg": "",
       "vrml": ""
     },
