@@ -2,11 +2,9 @@
   "board": {
     "active_layer": 0,
     "active_layer_preset": "",
-    "auto_track_width": false,
+    "auto_track_width": true,
     "hidden_netclasses": [],
-    "hidden_nets": [
-      "GND"
-    ],
+    "hidden_nets": [],
     "high_contrast_mode": 0,
     "net_color_mode": 1,
     "opacity": {
@@ -47,6 +45,7 @@
       "pads",
       "zones",
       "drc_warnings",
+      "drc_exclusions",
       "locked_item_shadows",
       "conflict_shadows",
       "shapes"
@@ -60,7 +59,7 @@
     "ssh_key": ""
   },
   "meta": {
-    "filename": "HypoV PCB.kicad_prl",
+    "filename": "HypoV PCB_Flipped.kicad_prl",
     "version": 5
   },
   "net_inspector_panel": {
@@ -89,16 +88,16 @@
       9
     ],
     "col_widths": [
-      156,
-      141,
-      103,
-      71,
-      103,
-      103,
-      103,
-      74,
-      103,
-      103
+      294,
+      279,
+      173,
+      120,
+      173,
+      173,
+      173,
+      126,
+      173,
+      173
     ],
     "custom_group_rules": [],
     "expanded_rows": [],
