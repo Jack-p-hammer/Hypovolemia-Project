@@ -12,6 +12,7 @@
 #define HEART_RATE_BPM  65
 #define NOISE_LEVEL     0.05
 #define BATCH_SIZE      10
+#define BT_LED_PIN      D0
 
 BLEServer*         pServer   = nullptr;
 BLECharacteristic* pChar     = nullptr;
@@ -43,6 +44,10 @@ void setup() {
   delay(1000);
   Serial.println("Starting...");
 
+  // LED pin setup
+  pinMode(BT_LED_PIN, OUTPUT);
+  digitalWrite(BT_LED_PIN, LOW);
+
   BLEDevice::init(DEVICE_NAME);
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new ServerCallbacks());
@@ -68,6 +73,22 @@ void loop() {
   static float t = 0.0;
 
   unsigned long interval = 1000 / SAMPLE_RATE_HZ;
+
+  unsigned int blink_interval = 500;
+  static unsigned long lastBlink = 0;
+  static bool led_state = false;
+
+// LED Logic
+  if (connected) {
+    digitalWrite(BT_LED_PIN, true);
+  }
+  else {
+    if (millis() - lastBlink >= blink_interval) {
+      lastBlink = millis();
+      led_state = !led_state;
+      digitalWrite(BT_LED_PIN, led_state);
+    }
+  }
 
   if (millis() - lastSample >= interval) {
     lastSample = millis();
