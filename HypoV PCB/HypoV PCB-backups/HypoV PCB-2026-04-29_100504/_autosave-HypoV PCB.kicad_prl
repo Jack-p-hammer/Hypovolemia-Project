@@ -2,11 +2,9 @@
   "board": {
     "active_layer": 0,
     "active_layer_preset": "",
-    "auto_track_width": false,
+    "auto_track_width": true,
     "hidden_netclasses": [],
-    "hidden_nets": [
-      "GND"
-    ],
+    "hidden_nets": [],
     "high_contrast_mode": 0,
     "net_color_mode": 1,
     "opacity": {
@@ -18,17 +16,17 @@
       "zones": 0.6
     },
     "selection_filter": {
-      "dimensions": true,
-      "footprints": true,
-      "graphics": true,
-      "keepouts": true,
+      "dimensions": false,
+      "footprints": false,
+      "graphics": false,
+      "keepouts": false,
       "lockedItems": false,
-      "otherItems": true,
-      "pads": true,
-      "text": true,
-      "tracks": true,
+      "otherItems": false,
+      "pads": false,
+      "text": false,
+      "tracks": false,
       "vias": true,
-      "zones": true
+      "zones": false
     },
     "visible_items": [
       "vias",
@@ -47,6 +45,7 @@
       "pads",
       "zones",
       "drc_warnings",
+      "drc_exclusions",
       "locked_item_shadows",
       "conflict_shadows",
       "shapes"
@@ -60,7 +59,7 @@
     "ssh_key": ""
   },
   "meta": {
-    "filename": "HypoV PCB.kicad_prl",
+    "filename": "_autosave-HypoV PCB.kicad_prl",
     "version": 5
   },
   "net_inspector_panel": {
