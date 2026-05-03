@@ -14,7 +14,7 @@
 #include <esp_now.h>
 
 // ---- Forearm node MAC address (WiFi MAC from MAC_Printer sketch) ----
-uint8_t forearmMAC[] = {0x90, 0x70, 0x69, 0x0B, 0xE0, 0xA8};
+uint8_t forearmMAC[] = {0x1C, 0xDB, 0xD4, 0x5D, 0x07, 0x64};
 
 // ---- Shared data struct — must match Forearm_Sensor_Firmware.ino exactly ----
 struct __attribute__((packed)) NeckData {
@@ -77,8 +77,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.println("=== Neck Sensor Firmware starting ===");
-
-  initSensors();
+  ini_nensors();
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();

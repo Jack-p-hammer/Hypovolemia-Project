@@ -2,23 +2,25 @@
 // Forearm_Sensor_Firmware.ino  —  ESP-NOW receiver + BLE transmitter
 // Board: Seeed XIAO ESP32-S3
 //
-// Receives neck data via ESP-NOW, reads its own sensors (fake),
-// batches 10 samples, and streams via BLE notify to the laptop.
+// Reads the MAX30102 PPG sensor at 500 Hz, receives neck data
+// via ESP-NOW, batches 10 combined samples, and streams via BLE.
 //
 // BLE packet format (ASCII, semicolon-delimited):
 //   "IR_neck,RED_neck,T_neck,IR_arm,RED_arm,T_arm;..."  x BATCH_SIZE
 //
-// FAKE DATA: arm sensor reads are synthesized sine waves.
-// Search for "FAKE DATA" to find the function to replace with
-// real MAX30102 + temperature reads.
+// Temperature field transmits 0.0 until a temp sensor is wired up.
 // ============================================================
 
+#include <Wire.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 // BLE2902 omitted — ESP32 core 3.x adds the CCCD descriptor automatically
+#include "MAX30105.h"
+
+MAX30105 particleSensor;
 
 // ---- BLE config ----
 #define DEVICE_NAME   "PPG_Forearm"
@@ -29,8 +31,8 @@
 
 
 // ---- Timing ----
-#define SAMPLE_RATE_HZ      500
-#define SAMPLE_INTERVAL_US  (1000000UL / SAMPLE_RATE_HZ)   // 2000 us
+// MAX30102 hardware runs at 1000 Hz; we skip every other sample → 500 Hz effective.
+#define SAMPLE_RATE_HZ  500
 
 // ---- Shared data struct — must match Neck_Sensor_Firmware.ino exactly ----
 struct __attribute__((packed)) NeckData {
@@ -56,29 +58,12 @@ struct Sample {
 static Sample batchBuf[BATCH_SIZE];
 static int    batchIdx = 0;
 
-// ---- Fake arm waveform state ----
-static float phase      = 0.0f;
-static float noisePhase = 0.0f;
-#define HEART_RATE_HZ  1.1f   // slightly different from neck (~66 BPM)
+// ---- Sensor config ----
+#define LED_BRIGHTNESS  0x7F    // fixed mid-range brightness (~25 mA)
+#define FINGER_ON       30000   // IR threshold to detect finger presence
 
-// =============================================================
-// FAKE DATA — replace with real sensor reads for integration
-// =============================================================
-void readArmSensors(float &ir, float &red, float &temp) {
-  ir   = 98000.0f + 4800.0f * sinf(phase)
-         + 280.0f * sinf(phase * 3.0f)
-         + (float)(random(-120, 120));
-
-  red  = 92000.0f + 4200.0f * sinf(phase + 0.15f)
-         + 220.0f * sinf(phase * 3.0f + 0.3f)
-         + (float)(random(-120, 120));
-
-  // Arm is slightly cooler than neck (relevant for hypovolemia detection)
-  temp = 36.2f + 0.04f * sinf(noisePhase);
-}
-// =============================================================
-// END FAKE DATA
-// =============================================================
+// ---- Downsampling state ----
+static int sampleSkip = 0;
 
 // ---- BLE server callbacks ----
 class ServerCB : public BLEServerCallbacks {
@@ -128,9 +113,19 @@ void setup() {
   delay(500);
   
   Serial.println("=== Forearm Sensor Firmware starting ===");
+
   // LED pin setup
   pinMode(BT_LED_PIN, OUTPUT);
   digitalWrite(BT_LED_PIN, LOW);
+
+  // ---- MAX30102 ----
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("FATAL: MAX30102 not found — check wiring/power/I2C address");
+    while (1);
+  }
+  // Args: brightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange
+  particleSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
+  Serial.println("MAX30102 initialised");
 
   // ---- ESP-NOW (requires WiFi STA mode) ----
   WiFi.mode(WIFI_STA);
@@ -167,7 +162,6 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t lastUs    = 0;
   static uint32_t debugTick = 0;
 
 // LED Logic
@@ -186,41 +180,49 @@ void loop() {
     }
   }
 
-  uint32_t now = micros();
-  if (now - lastUs < SAMPLE_INTERVAL_US) return;
-  lastUs = now;
+  // ---- Read sensor FIFO ----
+  particleSensor.check();
 
-  // Advance waveform phases
-  phase      += 2.0f * PI * HEART_RATE_HZ / SAMPLE_RATE_HZ;
-  noisePhase += 2.0f * PI * 0.05f / SAMPLE_RATE_HZ;
-  if (phase      > 2.0f * PI) phase      -= 2.0f * PI;
-  if (noisePhase > 2.0f * PI) noisePhase -= 2.0f * PI;
+  while (particleSensor.available()) {
+    uint32_t ir  = particleSensor.getFIFOIR();
+    uint32_t red = particleSensor.getFIFORed();
 
-  // Read arm sensors
-  Sample s;
-  readArmSensors(s.ir_arm, s.red_arm, s.t_arm);
-
-  // Snapshot latest neck data (zeros until first packet arrives)
-  s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
-  s.red_neck = neckReceived ? latestNeck.red         : 0.0f;
-  s.t_neck   = neckReceived ? latestNeck.temperature : 0.0f;
-
-  batchBuf[batchIdx++] = s;
-
-  // When batch is full, notify BLE client
-  if (batchIdx >= BATCH_SIZE) {
-    batchIdx = 0;
-    if (bleConnected) {
-      sendBLEBatch();
+    // Downsample 1000 Hz → 500 Hz
+    sampleSkip++;
+    if (sampleSkip % 2 != 0) {
+      particleSensor.nextSample();
+      continue;
     }
-  }
 
-  // Debug at 10 Hz
-  if (++debugTick >= 50) {
-    debugTick = 0;
-    Serial.printf("[ARM]  IR:%.0f  RED:%.0f  T:%.2fC | [NECK] IR:%.0f  RED:%.0f  T:%.2fC  BLE:%s\n",
-                  s.ir_arm,  s.red_arm,  s.t_arm,
-                  s.ir_neck, s.red_neck, s.t_neck,
-                  bleConnected ? "connected" : "waiting");
+    // Build sample
+    Sample s;
+    s.ir_arm   = (float)ir;
+    s.red_arm  = (float)red;
+    s.t_arm    = 0.0f;   // populate when temp sensor is added
+
+    // Snapshot latest neck data (zeros until first ESP-NOW packet arrives)
+    s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
+    s.red_neck = neckReceived ? latestNeck.red         : 0.0f;
+    s.t_neck   = neckReceived ? latestNeck.temperature : 0.0f;
+
+    batchBuf[batchIdx++] = s;
+
+    // When batch is full, notify BLE client
+    if (batchIdx >= BATCH_SIZE) {
+      batchIdx = 0;
+      if (bleConnected) sendBLEBatch();
+    }
+
+    // Debug at 10 Hz (every 50 samples)
+    if (++debugTick >= 50) {
+      debugTick = 0;
+      bool fingerOn = (ir > FINGER_ON);
+      Serial.printf("[ARM] IR:%lu RED:%lu finger:%s | [NECK] IR:%.0f RED:%.0f BLE:%s\n",
+                    ir, red, fingerOn ? "YES" : "NO",
+                    s.ir_neck, s.red_neck,
+                    bleConnected ? "connected" : "waiting");
+    }
+
+    particleSensor.nextSample();
   }
 }
