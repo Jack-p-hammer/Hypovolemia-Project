@@ -63,7 +63,7 @@ void loop() {
 
     float thisTemp = tempSensor.getTemperature();
 
-    float diff = otherTemp - thisTemp;
+    float diff = abs(otherTemp - thisTemp);
 
     Serial.print("other temp: ");
     Serial.print(otherTemp);
