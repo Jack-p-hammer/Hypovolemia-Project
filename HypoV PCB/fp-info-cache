@@ -1,4 +1,4 @@
-27246071168220164
+27251404182965149
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -108615,6 +108615,27 @@ fab
 WSON-8_2x2mm_P0.5mm_EP0.9x1.6mm
 8-Lead Plastic WSON, 2x2mm Body, 0.5mm Pitch, WSON-8, http://www.ti.com/lit/ds/symlink/lm27761.pdf
 WSON 8 1EP
+0
+9
+9
+footprints
+21-0137_T833&plus_2_MXM
+
+MAX30205MTA+T 
+0
+9
+9
+footprints
+21-0137_T833&plus_2_MXM-L
+
+MAX30205MTA+T 
+0
+9
+9
+footprints
+21-0137_T833&plus_2_MXM-M
+
+MAX30205MTA+T 
 0
 9
 9

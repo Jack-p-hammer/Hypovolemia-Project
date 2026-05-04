@@ -2,6 +2,7 @@
 #include <Protocentral_MAX30205.h>
 
 MAX30205 tempSensor;
+bool connected = false; 
 
 void setup() {
   Serial.begin(115200);
@@ -26,16 +27,23 @@ void setup() {
     attempts += 1;
     delay(1000);
   }
+  connected = true; 
 
   Serial.println("Temperature sensor connected.");
 }
 
 void loop() {
-  float temp = tempSensor.getTemperature();
+  if (connected) {
+     float temp = tempSensor.getTemperature();
 
   Serial.print("Temperature: ");
   Serial.print(temp);
   Serial.println(" C");
 
+
+  }else {
+    Serial.println(" temp sensor not connected");
+  }
+ 
   delay(1000);
 }
