@@ -1,55 +1,71 @@
-//////////////////////////////////////////////////////////////////////////////////////////
+// ============================================================
+// BasicTemperatureReading.ino
 //
-//    Arduino example for the MAX30205 body temperature sensor breakout board
+// Reads temperature from the MAX30205 and IR from the MAX30102,
+// then prints both to Serial in labeled format for the Arduino
+// Serial Plotter:
+//   Temp_C:<value>,IR:<value>
 //
-//    Author: Ashwin Whitchurch
-//    Copyright (c) 2020 ProtoCentral
+// Both sensors share the I2C bus (no address conflict:
+//   MAX30205 = 0x48/0x49, MAX30102 = 0x57).
 //
-//    This software is licensed under the MIT License(http://opensource.org/licenses/MIT).
-//
-//   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
-//   NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-//   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-//   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-//   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-//
-//   For information on how to use, visit https://github.com/protocentral/ProtoCentral_MAX30205
-/////////////////////////////////////////////////////////////////////////////////////////
-
-/*
-
-This program Print temperature on terminal
-
-Hardware Connections (Breakoutboard to Arduino):
-Vin  - 5V (3.3V is allowed)
-GND - GND
-SDA - A4 (or SDA)
-SCL - A5 (or SCL)
-
-*/
+// Hardware connections (same for both sensors):
+//   SDA - SDA
+//   SCL - SCL
+//   VIN - 3.3V
+//   GND - GND
+// ============================================================
 
 #include <Wire.h>
 #include "Protocentral_MAX30205.h"
+#include "MAX30105.h"
+
 MAX30205 tempSensor;
+MAX30105  ppgSensor;
+
+// Match the LED drive and ADC settings used in the main firmware
+#define LED_BRIGHTNESS  0xCF   // ~25 mA
+#define FINGER_ON       30000  // IR threshold — below this means off-body
 
 void setup() {
-
-  Serial.begin(9600);
+  Serial.begin(115200);
   Wire.begin();
 
-  //scan for temperature in every 30 sec untill a sensor is found. Scan for both addresses 0x48 and 0x49
-  while(!tempSensor.scanAvailableSensors()){
-    Serial.println("Couldn't find the temperature sensor, please connect the sensor." );
-    delay(30000);
+  // --- MAX30205 temperature sensor ---
+  while (!tempSensor.scanAvailableSensors()) {
+    Serial.println("MAX30205 not found — check wiring");
+    delay(5000);
   }
+  tempSensor.begin();
 
-  tempSensor.begin();   // set continuos mode, active mode
+  // --- MAX30102 PPG sensor ---
+  if (!ppgSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("MAX30102 not found — check wiring");
+    while (1);
+  }
+  // brightness, sampleAvg, ledMode, sampleRate, pulseWidth, adcRange
+  ppgSensor.setup(LED_BRIGHTNESS, 1, 2, 400, 411, 16384);
 }
 
 void loop() {
+  // Read temperature
+  float temp = tempSensor.getTemperature();
 
-	float temp = tempSensor.getTemperature(); // read temperature for every 100ms
-	Serial.print(temp ,2);
-	Serial.println("'c" );
-	delay(100);
+  // Read latest IR sample from PPG FIFO.
+  // ir is static so it holds the last valid reading if the FIFO happens
+  // to be empty this iteration (avoids spurious zero spikes in the plotter).
+  ppgSensor.check();
+  static uint32_t ir = 0;
+  while (ppgSensor.available()) {
+    ir = ppgSensor.getFIFOIR();
+    ppgSensor.nextSample();
+  }
+
+  // Labeled format — Arduino Serial Plotter renders each label as its own trace
+  Serial.print("Temp_C:");
+  Serial.print(temp, 2);
+  Serial.print(",IR:");
+  Serial.println(ir);
+
+  delay(100);  // ~10 Hz
 }

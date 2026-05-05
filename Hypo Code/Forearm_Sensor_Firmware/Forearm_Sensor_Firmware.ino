@@ -59,7 +59,7 @@ static Sample batchBuf[BATCH_SIZE];
 static int    batchIdx = 0;
 
 // ---- Sensor config ----
-#define LED_BRIGHTNESS  0x7F    // fixed mid-range brightness (~25 mA)
+#define LED_BRIGHTNESS  0xCF  // 0-255, default 0x1F.  Higher = brighter LED = stronger signal but more power.
 #define FINGER_ON       30000   // IR threshold to detect finger presence
 
 // ---- Downsampling state ----

@@ -3,11 +3,12 @@ import threading
 import tkinter as tk
 import csv
 import os
+from matplotlib.pylab import diff
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from bleak import BleakScanner, BleakClient
-from datetime import datetime
+from datetime import datetime, timezone
 from collections import deque
 
 
@@ -33,6 +34,9 @@ MAX_POINTS = 5000
 # Hypovolemia score threshold — scores at or above this are shown as NORMAL.
 # The score is based on PPG signal amplitude (see hypovolemia_score() below).
 HYPO_NORMAL_THRESHOLD = 80
+
+# IR ADC count below which the sensor is considered off-body (matches firmware FINGER_ON)
+FINGER_ON = 30000
 
 
 # =============================================================================
@@ -350,13 +354,63 @@ class Dashboard:
     # CARD: TEMPERATURE
     # -------------------------------------------------------------------------
 
+    def _draw_temp_toggle(self):
+        """Redraw the C/F pill toggle to match self.temp_unit."""
+        c  = self._toggle_canvas
+        W  = 72
+        H  = 26
+        r  = H // 2
+        pad = 3
+        bg  = BLUE if self.temp_unit == "F" else BORDER
+
+        c.delete("all")
+
+        # Pill background — two circles + filled rectangle between them
+        c.create_oval(0, 0, H, H, fill=bg, outline=bg)
+        c.create_oval(W - H, 0, W, H, fill=bg, outline=bg)
+        c.create_rectangle(r, 0, W - r, H, fill=bg, outline=bg)
+
+        # Sliding thumb
+        cx = (W - r) if self.temp_unit == "F" else r
+        c.create_oval(cx - r + pad, pad, cx + r - pad, H - pad,
+                      fill=WHITE, outline=WHITE)
+
+        # C / F labels
+        c.create_text(r, H // 2, text="C",
+                      fill=TEXT_MUTED if self.temp_unit == "F" else bg,
+                      font=(FONT_MONO, 9, "bold"))
+        c.create_text(W - r, H // 2, text="F",
+                      fill=TEXT_MUTED if self.temp_unit == "C" else bg,
+                      font=(FONT_MONO, 9, "bold"))
+
+    def _toggle_temp_unit(self):
+        """Switch the temperature display between °C and °F and redraw the toggle."""
+        self.temp_unit = "F" if self.temp_unit == "C" else "C"
+        self.unit_var.set("°F" if self.temp_unit == "F" else "°C")
+        self._draw_temp_toggle()
+
     def _build_temp_card(self, parent, row, col):
-        """Two rows showing the live neck and arm temperatures in degrees F."""
+        """Two rows showing live neck and arm temperatures with a C/F pill toggle."""
         card = self._make_card(parent, "TEMPERATURE", row, col)
 
-        self.t_neck_var = tk.StringVar(value="98.4")
-        self.t_arm_var  = tk.StringVar(value="95.2")
+        self.temp_unit = "C"
+        self.unit_var  = tk.StringVar(value="°C")
 
+        self.t_neck_var = tk.StringVar(value="--.-")
+        self.t_arm_var  = tk.StringVar(value="--.-")
+
+        # --- Toggle switch row ---
+        toggle_row = tk.Frame(card, bg=WHITE)
+        toggle_row.pack(anchor="e", padx=16, pady=(8, 0))
+
+        self._toggle_canvas = tk.Canvas(toggle_row, width=72, height=26,
+                                        bg=WHITE, highlightthickness=0,
+                                        cursor="hand2")
+        self._toggle_canvas.pack(side="right")
+        self._toggle_canvas.bind("<Button-1>", lambda e: self._toggle_temp_unit())
+        self._draw_temp_toggle()
+
+        # --- Sensor value rows ---
         sensors = [
             ("TNeck", self.t_neck_var),
             ("TArm",  self.t_arm_var),
@@ -376,7 +430,7 @@ class Dashboard:
                      bg=WHITE, fg=TEXT,
                      font=(FONT_MONO, 22, "bold")).pack(side="left", padx=4)
 
-            tk.Label(row_frame, text="F",
+            tk.Label(row_frame, textvariable=self.unit_var,
                      bg=WHITE, fg=TEXT_MUTED,
                      font=(FONT_MONO, 11)).pack(side="left")
 
@@ -439,6 +493,25 @@ class Dashboard:
         # The actual plot lines — data is updated dynamically in _update_plot()
         self.line_neck, = self.ax_neck.plot([], [], color=BLUE, linewidth=1.0)
         self.line_arm,  = self.ax_arm.plot([],  [], color=RED,  linewidth=1.0)
+
+        # Off-body warning overlays — shown when IR is below FINGER_ON threshold
+        _warn_style = dict(
+            ha="center", va="center",
+            fontsize=13, fontfamily="monospace",
+            color="white", fontweight="bold",
+            bbox=dict(boxstyle="round,pad=1.2", facecolor="#c0392b",
+                      alpha=0.95, edgecolor="#7b241c", linewidth=2.5),
+            visible=False,
+            zorder=10,
+        )
+        self._neck_warning = self.ax_neck.text(
+            0.5, 0.5, "Sensor not detecting body\nPlease place on patient",
+            transform=self.ax_neck.transAxes, **_warn_style
+        )
+        self._arm_warning = self.ax_arm.text(
+            0.5, 0.5, "Sensor not detecting body\nPlease place on patient",
+            transform=self.ax_arm.transAxes, **_warn_style
+        )
 
         canvas = FigureCanvasTkAgg(self.fig_ppg, master=card)
         canvas.get_tk_widget().configure(bg=WHITE, highlightthickness=0)
@@ -544,35 +617,54 @@ class Dashboard:
             except Exception:
                 pass
 
+        # Show off-body warning on arm subplot when IR is below threshold and connected
+        arm_off_body = latest["connected"] and latest["arm"] < FINGER_ON
+        # Neck: only warn if we have real neck data (non-zero) that's below threshold
+        neck_off_body = 0 < latest["neck"] < FINGER_ON
+        self._arm_warning.set_visible(arm_off_body)
+        self._neck_warning.set_visible(neck_off_body)
+
+        # Fade lines when off-body so the warning text draws the eye
+        self.line_arm.set_alpha(0.12 if arm_off_body else 1.0)
+        self.line_arm.set_color("#aaaaaa" if arm_off_body else RED)
+        self.line_neck.set_alpha(0.12 if neck_off_body else 1.0)
+        self.line_neck.set_color("#aaaaaa" if neck_off_body else BLUE)
+
     def _update_ui(self):
         """
         Called every 200 ms to refresh all the text widgets on the dashboard.
         Covers temperatures, delta-T, trend, hypovolemia scores, and connection state.
         """
-        t_neck = latest["t_neck"]
-        t_arm  = latest["t_arm"]
+        t_neck = latest["t_neck"]   # always °C from sensor
+        t_arm  = latest["t_arm"]    # always °C from sensor
 
-        # Update temperature displays
-        self.t_neck_var.set(f"{t_neck:.1f}")
-        self.t_arm_var.set(f"{t_arm:.1f}")
+        # Convert for display only — delta-T thresholds stay in °C
+        if self.temp_unit == "F":
+            self.t_neck_var.set(f"{t_neck * 9/5 + 32:.1f}")
+            self.t_arm_var.set(f"{t_arm  * 9/5 + 32:.1f}")
+        else:
+            self.t_neck_var.set(f"{t_neck:.1f}")
+            self.t_arm_var.set(f"{t_arm:.1f}")
 
         # Delta-T: difference between neck and arm temperature
-        delta = t_neck - t_arm
-        self.delta_var.set(f"dT:  {delta:.1f}")
+        scale = 1.5 # scaling factor to make the delta-T more visually prominent; adjust as needed
+        delta = scale * (t_neck - t_arm)
+        self.delta_var.set(f"dT:  {delta/scale:.1f}")
 
         # Trend: compare the average of the last 10 neck samples to samples from
         # 40-50 readings ago.  A positive diff means the temperature is rising.
-        if len(t_neck_data) > 50:
-            recent_avg = sum(list(t_neck_data)[-10:])    / 10
-            older_avg  = sum(list(t_neck_data)[-50:-40]) / 10
-            diff = recent_avg - older_avg
-
-            if diff > 0.05:
-                trend_text, trend_color = "->  Rising",  RED
-            elif diff < -0.05:
-                trend_text, trend_color = "->  Falling", BLUE
-            else:
-                trend_text, trend_color = "->  Stable",  AMBER
+        if len(t_neck_data) < 50:
+            match delta:
+                case _ if delta < 3.0:
+                    trend_text, trend_color = "Normal", TEXT_MUTED
+                case _ if delta > 3.0 and delta < 5.0:
+                    trend_text, trend_color = "Early",  BLUE
+                case _ if delta >= 5.0 and delta < 7.0:
+                    trend_text, trend_color = "Mid",  AMBER
+                case _ if delta >= 7.0 and delta < 10.0:
+                    trend_text, trend_color = "Moderate",  RED
+                case _ if delta >= 10.0:
+                    trend_text, trend_color = "Severe",  RED         
         else:
             trend_text, trend_color = "->  Waiting...", TEXT_MUTED
 
@@ -620,7 +712,7 @@ class Dashboard:
 
     def _tick_clock(self):
         """Update the UTC clock in the header once per second."""
-        self.clock_var.set(datetime.utcnow().strftime("%H:%M:%S UTC"))
+        self.clock_var.set(datetime.now(timezone.utc).strftime("%H:%M:%S UTC"))
         self.root.after(1000, self._tick_clock)
 
     # -------------------------------------------------------------------------
