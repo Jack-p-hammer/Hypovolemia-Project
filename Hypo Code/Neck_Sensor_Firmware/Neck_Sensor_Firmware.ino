@@ -35,7 +35,10 @@ struct __attribute__((packed)) NeckData {
 #define SAMPLE_INTERVAL_US  (1000000UL / SAMPLE_RATE_HZ)   // 2000 us
 
 // ---- Sensor config (matches Forearm_Sensor_Firmware) ----
-#define LED_BRIGHTNESS  0xCF   // ~25 mA
+#define LED_BRIGHTNESS  0xFF   // ~25 mA
+
+// ---- ESP-NOW status LED ----
+#define ESP_LED_PIN  D7
 
 // ---- Latest PPG readings — static so they hold last valid value if FIFO
 //      is momentarily empty, avoiding spurious zero spikes ----
@@ -43,13 +46,14 @@ static uint32_t irLatest  = 0;
 static uint32_t redLatest = 0;
 
 // ---- ESP-NOW diagnostics ----
-static uint32_t sendOK   = 0;
-static uint32_t sendFail = 0;
+static uint32_t sendOK     = 0;
+static uint32_t sendFail   = 0;
+static bool     lastSendOK = false;  // true when the most recent packet was acknowledged
 
 // ---- ESP-NOW send callback ----
 void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  if (status == ESP_NOW_SEND_SUCCESS) sendOK++;
-  else                                sendFail++;
+  if (status == ESP_NOW_SEND_SUCCESS) { sendOK++;   lastSendOK = true;  }
+  else                                { sendFail++; lastSendOK = false; }
 }
 
 void setup() {
@@ -57,9 +61,11 @@ void setup() {
   delay(1000);
   Serial.println("=== Neck Sensor Firmware starting ===");
 
-  Wire.begin();
+  // LED pin setup — LOW = off on start
+  pinMode(ESP_LED_PIN, OUTPUT);
+  digitalWrite(ESP_LED_PIN, LOW);
 
-  // ---- MAX30102 PPG sensor ----
+  // ---- MAX30102 (initialises Wire internally) ----
   if (!ppgSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("FATAL: MAX30102 not found — check wiring");
     while (1);
@@ -68,7 +74,7 @@ void setup() {
   ppgSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
   Serial.println("MAX30102 initialised");
 
-  // ---- MAX30205 temperature sensor ----
+  // ---- MAX30205 (shares the Wire bus already started above) ----
   while (!tempSensor.scanAvailableSensors()) {
     Serial.println("MAX30205 not found — check wiring, retrying...");
     delay(5000);
@@ -101,8 +107,21 @@ void setup() {
 }
 
 void loop() {
-  static uint32_t lastUs    = 0;
-  static uint32_t debugTick = 0;
+  static uint32_t lastUs       = 0;
+  static uint32_t debugTick    = 0;
+
+  // LED: solid when last ESP-NOW send was acknowledged, blink while waiting
+  static unsigned long lastBlink = 0;
+  static bool          ledState  = false;
+  if (lastSendOK) {
+    digitalWrite(ESP_LED_PIN, HIGH);
+  } else {
+    if (millis() - lastBlink >= 500) {
+      lastBlink = millis();
+      ledState  = !ledState;
+      digitalWrite(ESP_LED_PIN, ledState);
+    }
+  }
 
   // Always drain the PPG FIFO so it never overflows (32-sample limit).
   // Static variables retain the last valid reading between iterations.

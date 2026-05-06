@@ -38,13 +38,13 @@ void setup() {
   }
   tempSensor.begin();
 
-  // --- MAX30102 PPG sensor ---
-  if (!ppgSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("MAX30102 not found — check wiring");
-    while (1);
-  }
+  // // --- MAX30102 PPG sensor ---
+  // if (!ppgSensor.begin(Wire, I2C_SPEED_FAST)) {
+  //   Serial.println("MAX30102 not found — check wiring");
+  //   while (1);
+  // }
   // brightness, sampleAvg, ledMode, sampleRate, pulseWidth, adcRange
-  ppgSensor.setup(LED_BRIGHTNESS, 1, 2, 400, 411, 16384);
+  // ppgSensor.setup(LED_BRIGHTNESS, 1, 2, 400, 411, 16384);
 }
 
 void loop() {
@@ -54,18 +54,18 @@ void loop() {
   // Read latest IR sample from PPG FIFO.
   // ir is static so it holds the last valid reading if the FIFO happens
   // to be empty this iteration (avoids spurious zero spikes in the plotter).
-  ppgSensor.check();
+  // ppgSensor.check();
   static uint32_t ir = 0;
-  while (ppgSensor.available()) {
-    ir = ppgSensor.getFIFOIR();
-    ppgSensor.nextSample();
-  }
+  // while (ppgSensor.available()) {
+  //   ir = ppgSensor.getFIFOIR();
+  //   ppgSensor.nextSample();
+  // }
 
   // Labeled format — Arduino Serial Plotter renders each label as its own trace
   Serial.print("Temp_C:");
-  Serial.print(temp, 2);
-  Serial.print(",IR:");
-  Serial.println(ir);
+  Serial.println(temp, 2);
+  // Serial.print(",IR:");
+  // Serial.println(ir);
 
   delay(100);  // ~10 Hz
 }

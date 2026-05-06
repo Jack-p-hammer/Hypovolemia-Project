@@ -8,7 +8,7 @@
 // BLE packet format (ASCII, semicolon-delimited):
 //   "IR_neck,RED_neck,T_neck,IR_arm,RED_arm,T_arm;..."  x BATCH_SIZE
 //
-// Temperature field transmits 0.0 until a temp sensor is wired up.
+// Temperature read from MAX30205 on the shared I2C bus.
 // ============================================================
 
 #include <Wire.h>
@@ -19,15 +19,17 @@
 #include <BLEUtils.h>
 // BLE2902 omitted — ESP32 core 3.x adds the CCCD descriptor automatically
 #include "MAX30105.h"
+#include "Protocentral_MAX30205.h"
 
 MAX30105 particleSensor;
+MAX30205 tempSensor;
 
 // ---- BLE config ----
 #define DEVICE_NAME   "PPG_Forearm"
 #define SERVICE_UUID  "12345678-1234-1234-1234-123456789abc"
 #define CHAR_UUID     "abcdefab-1234-1234-1234-abcdefabcdef"
 #define BATCH_SIZE    10
-#define BT_LED_PIN     D0
+#define BT_LED_PIN     D7
 
 
 // ---- Timing ----
@@ -111,14 +113,14 @@ void sendBLEBatch() {
 void setup() {
   Serial.begin(115200);
   delay(500);
-  
+
   Serial.println("=== Forearm Sensor Firmware starting ===");
 
-  // LED pin setup
+  // LED pin setup — LOW = off on start
   pinMode(BT_LED_PIN, OUTPUT);
   digitalWrite(BT_LED_PIN, LOW);
 
-  // ---- MAX30102 ----
+  // ---- MAX30102 (initialises Wire internally) ----
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("FATAL: MAX30102 not found — check wiring/power/I2C address");
     while (1);
@@ -126,6 +128,14 @@ void setup() {
   // Args: brightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange
   particleSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
   Serial.println("MAX30102 initialised");
+
+  // ---- MAX30205 (shares the Wire bus already started above) ----
+  while (!tempSensor.scanAvailableSensors()) {
+    Serial.println("MAX30205 not found — check wiring, retrying...");
+    delay(5000);
+  }
+  tempSensor.begin();
+  Serial.println("MAX30205 initialised");
 
   // ---- ESP-NOW (requires WiFi STA mode) ----
   WiFi.mode(WIFI_STA);
@@ -198,7 +208,7 @@ void loop() {
     Sample s;
     s.ir_arm   = (float)ir;
     s.red_arm  = (float)red;
-    s.t_arm    = 0.0f;   // populate when temp sensor is added
+    s.t_arm    = tempSensor.getTemperature();
 
     // Snapshot latest neck data (zeros until first ESP-NOW packet arrives)
     s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
