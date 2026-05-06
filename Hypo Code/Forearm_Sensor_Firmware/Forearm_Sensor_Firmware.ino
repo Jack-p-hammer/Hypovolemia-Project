@@ -8,7 +8,7 @@
 // BLE packet format (ASCII, semicolon-delimited):
 //   "IR_neck,RED_neck,T_neck,IR_arm,RED_arm,T_arm;..."  x BATCH_SIZE
 //
-// Temperature read from MAX30205 on the shared I2C bus.
+// Temperature field transmits 0.0 until a temp sensor is wired up.
 // ============================================================
 
 #include <Wire.h>
@@ -23,6 +23,7 @@
 
 MAX30105 particleSensor;
 MAX30205 tempSensor;
+static bool ppgOK = false;   // false if MAX30102 failed to initialise
 
 // ---- BLE config ----
 #define DEVICE_NAME   "PPG_Forearm"
@@ -61,7 +62,7 @@ static Sample batchBuf[BATCH_SIZE];
 static int    batchIdx = 0;
 
 // ---- Sensor config ----
-#define LED_BRIGHTNESS  0xCF  // 0-255, default 0x1F.  Higher = brighter LED = stronger signal but more power.
+#define LED_BRIGHTNESS  0x7F    // fixed mid-range brightness (~25 mA)
 #define FINGER_ON       30000   // IR threshold to detect finger presence
 
 // ---- Downsampling state ----
@@ -113,21 +114,22 @@ void sendBLEBatch() {
 void setup() {
   Serial.begin(115200);
   delay(500);
-
+  
   Serial.println("=== Forearm Sensor Firmware starting ===");
 
-  // LED pin setup — LOW = off on start
+  // LED pin setup
   pinMode(BT_LED_PIN, OUTPUT);
   digitalWrite(BT_LED_PIN, LOW);
 
   // ---- MAX30102 (initialises Wire internally) ----
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("FATAL: MAX30102 not found — check wiring/power/I2C address");
-    while (1);
+    Serial.println("WARNING: MAX30102 not found — arm PPG will send zeros");
+  } else {
+    // Args: brightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange
+    particleSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
+    Serial.println("MAX30102 initialised");
+    ppgOK = true;
   }
-  // Args: brightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange
-  particleSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
-  Serial.println("MAX30102 initialised");
 
   // ---- MAX30205 (shares the Wire bus already started above) ----
   while (!tempSensor.scanAvailableSensors()) {
@@ -190,49 +192,68 @@ void loop() {
     }
   }
 
-  // ---- Read sensor FIFO ----
-  particleSensor.check();
+  if (ppgOK) {
+    // ---- Read sensor FIFO ----
+    particleSensor.check();
 
-  while (particleSensor.available()) {
-    uint32_t ir  = particleSensor.getFIFOIR();
-    uint32_t red = particleSensor.getFIFORed();
+    while (particleSensor.available()) {
+      uint32_t ir  = particleSensor.getFIFOIR();
+      uint32_t red = particleSensor.getFIFORed();
 
-    // Downsample 1000 Hz → 500 Hz
-    sampleSkip++;
-    if (sampleSkip % 2 != 0) {
+      // Downsample 1000 Hz → 500 Hz
+      sampleSkip++;
+      if (sampleSkip % 2 != 0) {
+        particleSensor.nextSample();
+        continue;
+      }
+
+      // Build sample
+      Sample s;
+      s.ir_arm   = (float)ir;
+      s.red_arm  = (float)red;
+      s.t_arm    = tempSensor.getTemperature();
+
+      // Snapshot latest neck data (zeros until first ESP-NOW packet arrives)
+      s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
+      s.red_neck = neckReceived ? latestNeck.red         : 0.0f;
+      s.t_neck   = neckReceived ? latestNeck.temperature : 0.0f;
+
+      batchBuf[batchIdx++] = s;
+
+      // When batch is full, notify BLE client
+      if (batchIdx >= BATCH_SIZE) {
+        batchIdx = 0;
+        if (bleConnected) sendBLEBatch();
+      }
+
+      // Debug at 10 Hz (every 50 samples)
+      if (++debugTick >= 50) {
+        debugTick = 0;
+        bool fingerOn = (ir > FINGER_ON);
+        Serial.printf("[ARM] IR:%lu RED:%lu finger:%s | [NECK] IR:%.0f RED:%.0f BLE:%s\n",
+                      ir, red, fingerOn ? "YES" : "NO",
+                      s.ir_neck, s.red_neck,
+                      bleConnected ? "connected" : "waiting");
+      }
+
       particleSensor.nextSample();
-      continue;
     }
-
-    // Build sample
-    Sample s;
-    s.ir_arm   = (float)ir;
-    s.red_arm  = (float)red;
-    s.t_arm    = tempSensor.getTemperature();
-
-    // Snapshot latest neck data (zeros until first ESP-NOW packet arrives)
-    s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
-    s.red_neck = neckReceived ? latestNeck.red         : 0.0f;
-    s.t_neck   = neckReceived ? latestNeck.temperature : 0.0f;
-
-    batchBuf[batchIdx++] = s;
-
-    // When batch is full, notify BLE client
-    if (batchIdx >= BATCH_SIZE) {
-      batchIdx = 0;
-      if (bleConnected) sendBLEBatch();
+  } else {
+    // PPG sensor unavailable — push zero samples at ~500 Hz so BLE keeps streaming
+    static uint32_t lastUs = 0;
+    uint32_t now = micros();
+    if (now - lastUs >= 2000) {
+      lastUs = now;
+      Sample s = {0};
+      s.t_arm    = tempSensor.getTemperature();
+      s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
+      s.red_neck = neckReceived ? latestNeck.red         : 0.0f;
+      s.t_neck   = neckReceived ? latestNeck.temperature : 0.0f;
+      batchBuf[batchIdx++] = s;
+      if (batchIdx >= BATCH_SIZE) {
+        batchIdx = 0;
+        if (bleConnected) sendBLEBatch();
+      }
     }
-
-    // Debug at 10 Hz (every 50 samples)
-    if (++debugTick >= 50) {
-      debugTick = 0;
-      bool fingerOn = (ir > FINGER_ON);
-      Serial.printf("[ARM] IR:%lu RED:%lu finger:%s | [NECK] IR:%.0f RED:%.0f BLE:%s\n",
-                    ir, red, fingerOn ? "YES" : "NO",
-                    s.ir_neck, s.red_neck,
-                    bleConnected ? "connected" : "waiting");
-    }
-
-    particleSensor.nextSample();
   }
 }
