@@ -3,7 +3,6 @@ import threading
 import tkinter as tk
 import csv
 import os
-from matplotlib.pylab import diff
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -54,6 +53,7 @@ TEXT_MUTED = "#7a8a9a"   # secondary / label text
 GREEN      = "#27ae60"   # NORMAL status
 AMBER      = "#e67e22"   # LOW status and trend indicator
 FONT_MONO  = "Courier New"
+FONT_SANS  = "Segoe UI"
 
 
 # =============================================================================
@@ -140,7 +140,7 @@ def parse_batch(raw_bytes: bytes):
         sample_count += 1
 
         # Write the sample to the CSV log immediately
-        if csv_writer:
+        if csv_writer and csv_file and not csv_file.closed:
             csv_writer.writerow([f"{elapsed_seconds:.4f}", neck, arm, t_neck, t_arm])
             csv_file.flush()
 
@@ -249,7 +249,7 @@ def hypovolemia_score(signal_deque):
 class Dashboard:
     def __init__(self, root):
         self.root = root
-        self.root.title("BT-SENSOR  ·  DATA LIVE STREAM")
+        self.root.title("Hypovolemia Monitor — Clinical Interface")
         self.root.geometry("1100x720")
         self.root.configure(bg=BG_MAIN)
         self.root.resizable(True, True)
@@ -285,22 +285,25 @@ class Dashboard:
         header.pack(fill="x")
         header.pack_propagate(False)
 
-        tk.Label(header, text="  BT-SENSOR  ·  DATA LIVE STREAM",
+        tk.Label(header, text="  HYPOVOLEMIA MONITOR",
                  bg=BLUE, fg="white",
-                 font=(FONT_MONO, 12, "bold")).pack(side="left", pady=10)
+                 font=(FONT_SANS, 13, "bold")).pack(side="left", pady=10)
+        tk.Label(header, text="Clinical Decision Support  ·  Live PPG Stream",
+                 bg=BLUE, fg="#aaccee",
+                 font=(FONT_SANS, 9)).pack(side="left", padx=(8, 0), pady=10)
 
         # Connection status label (updated by BLE thread callbacks)
-        self.conn_var = tk.StringVar(value="● SEARCHING")
+        self.conn_var = tk.StringVar(value="● SEARCHING FOR DEVICE")
         self.conn_lbl = tk.Label(header, textvariable=self.conn_var,
                                  bg=BLUE, fg="#aaccee",
-                                 font=(FONT_MONO, 10))
+                                 font=(FONT_SANS, 10))
         self.conn_lbl.pack(side="right", padx=16)
 
         # Live UTC clock
         self.clock_var = tk.StringVar()
         tk.Label(header, textvariable=self.clock_var,
                  bg=BLUE, fg="#aaccee",
-                 font=(FONT_MONO, 10)).pack(side="right", padx=8)
+                 font=(FONT_SANS, 10)).pack(side="right", padx=8)
         self._tick_clock()
 
         # --- 2x2 grid of cards in the main area ---
@@ -320,13 +323,13 @@ class Dashboard:
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
         footer = tk.Frame(self.root, bg=BG_CARD)
         footer.pack(fill="x")
-        tk.Label(footer, text="  DEVICE: ARD-BT-001  ·  PROTO v0.1",
+        tk.Label(footer, text="  Device: PPG_Forearm",
                  bg=BG_CARD, fg=TEXT_MUTED,
-                 font=(FONT_MONO, 9)).pack(side="left", pady=4)
-        self.sample_var = tk.StringVar(value="samples: 0")
+                 font=(FONT_SANS, 9)).pack(side="left", pady=4)
+        self.sample_var = tk.StringVar(value="Recorded Samples: 0")
         tk.Label(footer, textvariable=self.sample_var,
                  bg=BG_CARD, fg=TEXT_MUTED,
-                 font=(FONT_MONO, 9)).pack(side="right", padx=12, pady=4)
+                 font=(FONT_SANS, 9)).pack(side="right", padx=12, pady=4)
 
         # Kick off the periodic UI refresh
         self.root.after(100, self._update_ui)
@@ -342,7 +345,7 @@ class Dashboard:
 
         tk.Label(outer, text=title,
                  bg=BG_MAIN, fg=TEXT_MUTED,
-                 font=(FONT_MONO, 8)).pack(anchor="w", padx=2, pady=(0, 3))
+                 font=(FONT_SANS, 8, "bold")).pack(anchor="w", padx=2, pady=(0, 3))
 
         inner = tk.Frame(outer, bg=WHITE,
                          highlightbackground=BORDER,
@@ -391,7 +394,7 @@ class Dashboard:
 
     def _build_temp_card(self, parent, row, col):
         """Two rows showing live neck and arm temperatures with a C/F pill toggle."""
-        card = self._make_card(parent, "TEMPERATURE", row, col)
+        card = self._make_card(parent, "PATIENT TEMPERATURE", row, col)
 
         self.temp_unit = "C"
         self.unit_var  = tk.StringVar(value="°C")
@@ -412,8 +415,8 @@ class Dashboard:
 
         # --- Sensor value rows ---
         sensors = [
-            ("TNeck", self.t_neck_var),
-            ("TArm",  self.t_arm_var),
+            ("Neck Site",    self.t_neck_var),
+            ("Forearm Site", self.t_arm_var),
         ]
 
         for label_text, value_var in sensors:
@@ -424,7 +427,7 @@ class Dashboard:
 
             tk.Label(row_frame, text=label_text,
                      bg=WHITE, fg=TEXT_MUTED,
-                     font=(FONT_MONO, 10)).pack(side="left", padx=12, pady=10)
+                     font=(FONT_SANS, 10)).pack(side="left", padx=12, pady=10)
 
             tk.Label(row_frame, textvariable=value_var,
                      bg=WHITE, fg=TEXT,
@@ -432,7 +435,7 @@ class Dashboard:
 
             tk.Label(row_frame, textvariable=self.unit_var,
                      bg=WHITE, fg=TEXT_MUTED,
-                     font=(FONT_MONO, 11)).pack(side="left")
+                     font=(FONT_SANS, 11)).pack(side="left")
 
     # -------------------------------------------------------------------------
     # CARD: DELTA-T FEEDBACK
@@ -443,21 +446,21 @@ class Dashboard:
         Shows the temperature difference between neck and arm (dT = T_neck - T_arm),
         plus a trend indicator (Rising / Stable / Falling) based on recent neck temperature.
         """
-        card = self._make_card(parent, "FEEDBACK", row, col)
+        card = self._make_card(parent, "TEMPERATURE DIFFERENTIAL", row, col)
 
-        tk.Label(card, text="TEMPERATURE",
+        tk.Label(card, text="CENTRAL–PERIPHERAL GRADIENT",
                  bg=WHITE, fg=TEXT_MUTED,
-                 font=(FONT_MONO, 9)).pack(anchor="w", padx=16, pady=(14, 2))
+                 font=(FONT_SANS, 9)).pack(anchor="w", padx=16, pady=(14, 2))
 
-        self.delta_var = tk.StringVar(value="dT:  —")
+        self.delta_var = tk.StringVar(value="ΔT:  —")
         tk.Label(card, textvariable=self.delta_var,
                  bg=WHITE, fg=AMBER,
                  font=(FONT_MONO, 18, "bold")).pack(anchor="w", padx=16, pady=2)
 
-        self.trend_var = tk.StringVar(value="dT Trend:  —")
+        self.trend_var = tk.StringVar(value="ΔT Stage:  —")
         self.trend_lbl = tk.Label(card, textvariable=self.trend_var,
                                   bg=WHITE, fg=AMBER,
-                                  font=(FONT_MONO, 13))
+                                  font=(FONT_SANS, 13))
         self.trend_lbl.pack(anchor="w", padx=16, pady=(0, 12))
 
     # -------------------------------------------------------------------------
@@ -469,7 +472,7 @@ class Dashboard:
         Live scrolling graph of the raw neck and arm PPG signals.
         The graph shows the last GRAPH_WINDOW_SECONDS seconds of data.
         """
-        card = self._make_card(parent, "PPG WAVEFORM", row, col)
+        card = self._make_card(parent, "PHOTOPLETHYSMOGRAPHY (PPG)", row, col)
 
         # Create a figure with two vertically stacked subplots sharing the x-axis
         self.fig_ppg, (self.ax_neck, self.ax_arm) = plt.subplots(
@@ -479,7 +482,7 @@ class Dashboard:
         self.fig_ppg.subplots_adjust(hspace=0.1, left=0.08, right=0.97, top=0.93, bottom=0.12)
 
         # Style both axes the same way
-        for ax, label in [(self.ax_neck, "Neck"), (self.ax_arm, "Arm")]:
+        for ax, label in [(self.ax_neck, "Neck"), (self.ax_arm, "Forearm")]:
             ax.set_facecolor(BG_CARD)
             ax.tick_params(colors=TEXT_MUTED, labelsize=7, length=2)
             for spine in ax.spines.values():
@@ -534,7 +537,7 @@ class Dashboard:
         neck and arm.  Each box has a large numeric score and a status label
         (NORMAL / LOW / CRITICAL) that changes color based on the threshold.
         """
-        card = self._make_card(parent, "HYPOVOLEMIA INDICATOR", row, col)
+        card = self._make_card(parent, "PERFUSION INDEX", row, col)
 
         container = tk.Frame(card, bg=WHITE)
         container.pack(fill="both", expand=True, padx=12, pady=12)
@@ -548,8 +551,8 @@ class Dashboard:
         self.hypo_arm_label  = tk.StringVar(value="—")
 
         panels = [
-            (0, "NECK", self.hypo_neck_score, self.hypo_neck_label),
-            (1, "ARM",  self.hypo_arm_score,  self.hypo_arm_label),
+            (0, "NECK SITE",    self.hypo_neck_score, self.hypo_neck_label),
+            (1, "FOREARM SITE", self.hypo_arm_score,  self.hypo_arm_label),
         ]
 
         for column_index, title, score_var, label_var in panels:
@@ -559,7 +562,7 @@ class Dashboard:
 
             tk.Label(box, text=title,
                      bg=BG_CARD, fg=TEXT_MUTED,
-                     font=(FONT_MONO, 9)).pack(pady=(10, 4))
+                     font=(FONT_SANS, 9, "bold")).pack(pady=(10, 4))
 
             score_lbl = tk.Label(box, textvariable=score_var,
                                  bg=BG_CARD, fg=GREEN,
@@ -568,7 +571,7 @@ class Dashboard:
 
             status_lbl = tk.Label(box, textvariable=label_var,
                                   bg=BG_CARD, fg=TEXT_MUTED,
-                                  font=(FONT_MONO, 9))
+                                  font=(FONT_SANS, 9))
             status_lbl.pack(pady=(0, 10))
 
             # Save references so _update_ui() can change the text color
@@ -649,7 +652,7 @@ class Dashboard:
         # Delta-T: difference between neck and arm temperature
         scale = 1.5 # scaling factor to make the delta-T more visually prominent; adjust as needed
         delta = scale * (t_neck - t_arm)
-        self.delta_var.set(f"dT:  {delta/scale:.1f}")
+        self.delta_var.set(f"ΔT:  {delta/scale:.1f}")
 
         # Trend: compare the average of the last 10 neck samples to samples from
         # 40-50 readings ago.  A positive diff means the temperature is rising.
@@ -666,9 +669,9 @@ class Dashboard:
                 case _ if delta >= 10.0:
                     trend_text, trend_color = "Severe",  RED         
         else:
-            trend_text, trend_color = "->  Waiting...", TEXT_MUTED
+            trend_text, trend_color = "→  Awaiting data...", TEXT_MUTED
 
-        self.trend_var.set(f"dT Trend:  {trend_text}")
+        self.trend_var.set(f"ΔT Stage:  {trend_text}")
         self.trend_lbl.configure(fg=trend_color)
 
         # Hypovolemia scores
@@ -699,13 +702,13 @@ class Dashboard:
 
         # Connection status indicator in the header
         if latest["connected"]:
-            self.conn_var.set("● CONNECTED")
+            self.conn_var.set("● DEVICE CONNECTED")
             self.conn_lbl.configure(fg="#90ee90")
         else:
-            self.conn_var.set("● SEARCHING")
+            self.conn_var.set("● SEARCHING FOR DEVICE")
             self.conn_lbl.configure(fg="#aaccee")
 
-        self.sample_var.set(f"samples: {sample_count:,}")
+        self.sample_var.set(f"Recorded Samples: {sample_count:,}")
 
         # Schedule the next refresh in 200 ms
         self.root.after(200, self._update_ui)
