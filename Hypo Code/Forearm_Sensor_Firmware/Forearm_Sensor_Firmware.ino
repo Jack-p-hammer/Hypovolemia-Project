@@ -23,7 +23,8 @@
 
 MAX30105 particleSensor;
 MAX30205 tempSensor;
-static bool ppgOK = false;   // false if MAX30102 failed to initialise
+static bool ppgOK  = false;   // false if MAX30102 failed to initialise
+static bool tempOK = false;   // false if MAX30205 failed to initialise
 
 // ---- BLE config ----
 #define DEVICE_NAME   "PPG_Forearm"
@@ -62,8 +63,25 @@ static Sample batchBuf[BATCH_SIZE];
 static int    batchIdx = 0;
 
 // ---- Sensor config ----
-#define LED_BRIGHTNESS  0x7F    // fixed mid-range brightness (~25 mA)
+#define LED_BRIGHTNESS  0x7F    
 #define FINGER_ON       30000   // IR threshold to detect finger presence
+
+// ---- I2C bus recovery ----
+// If a sensor was mid-transaction when the board last reset, it may be holding
+// SDA low and won't respond on the bus.  Clocking SCL 9 times releases it.
+void i2cBusRecover() {
+  pinMode(SDA, OUTPUT);
+  pinMode(SCL, OUTPUT);
+  digitalWrite(SDA, HIGH);
+  for (int i = 0; i < 9; i++) {
+    digitalWrite(SCL, HIGH); delayMicroseconds(5);
+    digitalWrite(SCL, LOW);  delayMicroseconds(5);
+  }
+  // Issue a STOP condition to cleanly end any open transaction
+  digitalWrite(SDA, LOW);  delayMicroseconds(5);
+  digitalWrite(SCL, HIGH); delayMicroseconds(5);
+  digitalWrite(SDA, HIGH); delayMicroseconds(5);
+}
 
 // ---- Downsampling state ----
 static int sampleSkip = 0;
@@ -120,24 +138,33 @@ void setup() {
   // LED pin setup
   pinMode(BT_LED_PIN, OUTPUT);
   digitalWrite(BT_LED_PIN, LOW);
+  // Recover any stuck I2C device before initialising the bus
+  i2cBusRecover();
 
-  // ---- MAX30102 (initialises Wire internally) ----
+  // I2C timeout — prevents Wire from hanging if a sensor is unplugged mid-transfer
+  Wire.setTimeOut(3000);
+
+  // ---- MAX30102 ----
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("WARNING: MAX30102 not found — arm PPG will send zeros");
   } else {
-    // Args: brightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange
     particleSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
     Serial.println("MAX30102 initialised");
     ppgOK = true;
   }
 
-  // ---- MAX30205 (shares the Wire bus already started above) ----
-  while (!tempSensor.scanAvailableSensors()) {
-    Serial.println("MAX30205 not found — check wiring, retrying...");
-    delay(5000);
+  // ---- MAX30205 — try up to 3 times then continue with zeros ----
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    if (tempSensor.scanAvailableSensors()) {
+      tempSensor.begin();
+      Serial.println("MAX30205 initialised");
+      tempOK = true;
+      break;
+    }
+    Serial.printf("MAX30205 not found (attempt %d/3)...\n", attempt);
+    delay(1000);
   }
-  tempSensor.begin();
-  Serial.println("MAX30205 initialised");
+  if (!tempOK) Serial.println("WARNING: MAX30205 not found — temperature will send zeros");
 
   // ---- ESP-NOW (requires WiFi STA mode) ----
   WiFi.mode(WIFI_STA);
@@ -211,7 +238,7 @@ void loop() {
       Sample s;
       s.ir_arm   = (float)ir;
       s.red_arm  = (float)red;
-      s.t_arm    = tempSensor.getTemperature();
+      s.t_arm    = tempOK ? tempSensor.getTemperature() : 0.0f;
 
       // Snapshot latest neck data (zeros until first ESP-NOW packet arrives)
       s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
@@ -245,7 +272,7 @@ void loop() {
     if (now - lastUs >= 2000) {
       lastUs = now;
       Sample s = {0};
-      s.t_arm    = tempSensor.getTemperature();
+      s.t_arm    = tempOK ? tempSensor.getTemperature() : 0.0f;
       s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
       s.red_neck = neckReceived ? latestNeck.red         : 0.0f;
       s.t_neck   = neckReceived ? latestNeck.temperature : 0.0f;
