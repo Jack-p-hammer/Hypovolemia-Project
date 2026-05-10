@@ -20,7 +20,7 @@ MAX30105 ppgSensor;
 MAX30205 tempSensor;
 
 // ---- Forearm node MAC address (WiFi MAC from MAC_Printer sketch) ----
-uint8_t forearmMAC[] = {0x1C, 0xDB, 0xD4, 0x5D, 0x07, 0x64};
+uint8_t forearmMAC[] = {0x1C, 0xDB, 0xD4, 0x5C, 0xA2, 0xBC};
 
 // ---- Shared data struct — must match Forearm_Sensor_Firmware.ino exactly ----
 struct __attribute__((packed)) NeckData {
@@ -35,11 +35,10 @@ struct __attribute__((packed)) NeckData {
 #define SAMPLE_INTERVAL_US  (1000000UL / SAMPLE_RATE_HZ)   // 2000 us
 
 // ---- Sensor config (matches Forearm_Sensor_Firmware) ----
-#define LED_BRIGHTNESS  0xFF   // ~25 mA
+#define LED_BRIGHTNESS  0xDF   // ~25 mA
 
 // ---- ESP-NOW status LED ----
 #define ESP_LED_PIN  D7
-
 // ---- Latest PPG readings — static so they hold last valid value if FIFO
 //      is momentarily empty, avoiding spurious zero spikes ----
 static uint32_t irLatest  = 0;
@@ -68,14 +67,14 @@ void setup() {
   // ---- MAX30102 (initialises Wire internally) ----
   if (!ppgSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("FATAL: MAX30102 not found — check wiring");
-    while (1);
+    delay(1000);
   }
   // brightness, sampleAvg, ledMode, sampleRate, pulseWidth, adcRange
-  ppgSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
+  ppgSensor.setup(LED_BRIGHTNESS, 2, 2, 1000, 411, 16384);
   Serial.println("MAX30102 initialised");
 
   // ---- MAX30205 (shares the Wire bus already started above) ----
-  while (!tempSensor.scanAvailableSensors()) {
+  if (!tempSensor.scanAvailableSensors()) {
     Serial.println("MAX30205 not found — check wiring, retrying...");
     delay(5000);
   }
@@ -123,6 +122,8 @@ void loop() {
     }
   }
 
+  // Always drain the PPG FIFO so it never overflows (32-sample limit).
+  // Static variables retain the last valid reading between iterations.
   // Always drain the PPG FIFO so it never overflows (32-sample limit).
   // Static variables retain the last valid reading between iterations.
   ppgSensor.check();

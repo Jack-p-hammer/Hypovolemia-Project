@@ -469,7 +469,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "HypoV PCB.kicad_pro",
+    "filename": "HypoV PCB_Flipped.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -528,7 +528,7 @@
       "plot": "",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": "",
+      "step": "../Hypo CAD/CAD/HypoV PCB_Flipped.step",
       "svg": "",
       "vrml": ""
     },

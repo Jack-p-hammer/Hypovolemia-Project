@@ -35,7 +35,7 @@ static bool tempOK = false;   // false if MAX30205 failed to initialise
 
 
 // ---- Timing ----
-// MAX30102 hardware runs at 1000 Hz; we skip every other sample → 500 Hz effective.
+// MAX30102 configured at 1000 Hz with sampleAvg=2 → FIFO fills at 500 Hz natively.
 #define SAMPLE_RATE_HZ  500
 
 // ---- Shared data struct — must match Neck_Sensor_Firmware.ino exactly ----
@@ -62,9 +62,9 @@ struct Sample {
 static Sample batchBuf[BATCH_SIZE];
 static int    batchIdx = 0;
 
-// ---- Sensor config ----
-#define LED_BRIGHTNESS  0x7F    
-#define FINGER_ON       30000   // IR threshold to detect finger presence
+// ---- Sensor config (matches Neck_Sensor_Firmware) ----
+#define LED_BRIGHTNESS  0xDF   // ~43 mA
+#define FINGER_ON       30000  // IR threshold to detect finger presence
 
 // ---- I2C bus recovery ----
 // If a sensor was mid-transaction when the board last reset, it may be holding
@@ -82,9 +82,6 @@ void i2cBusRecover() {
   digitalWrite(SCL, HIGH); delayMicroseconds(5);
   digitalWrite(SDA, HIGH); delayMicroseconds(5);
 }
-
-// ---- Downsampling state ----
-static int sampleSkip = 0;
 
 // ---- BLE server callbacks ----
 class ServerCB : public BLEServerCallbacks {
@@ -141,17 +138,19 @@ void setup() {
   // Recover any stuck I2C device before initialising the bus
   i2cBusRecover();
 
-  // I2C timeout — prevents Wire from hanging if a sensor is unplugged mid-transfer
-  Wire.setTimeOut(3000);
-
-  // ---- MAX30102 ----
+  // ---- MAX30102 (initialises Wire internally) ----
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("WARNING: MAX30102 not found — arm PPG will send zeros");
   } else {
-    particleSensor.setup(LED_BRIGHTNESS, 1, 2, 1000, 411, 16384);
+    // brightness, sampleAvg, ledMode, sampleRate, pulseWidth, adcRange
+    // sampleAvg=2 at 1000 Hz → FIFO fills at 500 Hz natively, matches neck firmware
+    particleSensor.setup(LED_BRIGHTNESS, 2, 2, 1000, 411, 16384);
     Serial.println("MAX30102 initialised");
     ppgOK = true;
   }
+
+  // I2C timeout — set after Wire.begin() (called inside particleSensor.begin()) so it takes effect
+  Wire.setTimeOut(3000);
 
   // ---- MAX30205 — try up to 3 times then continue with zeros ----
   for (int attempt = 1; attempt <= 3; attempt++) {
@@ -223,22 +222,20 @@ void loop() {
     // ---- Read sensor FIFO ----
     particleSensor.check();
 
+    // Read temperature once before draining the FIFO — the MAX30205 updates every ~125 ms
+    // so reading it once per FIFO drain is identical in accuracy to reading it per-sample,
+    // and avoids saturating the I2C bus with redundant transactions.
+    float t_arm_cached = tempOK ? tempSensor.getTemperature() : 0.0f;
+
     while (particleSensor.available()) {
       uint32_t ir  = particleSensor.getFIFOIR();
       uint32_t red = particleSensor.getFIFORed();
-
-      // Downsample 1000 Hz → 500 Hz
-      sampleSkip++;
-      if (sampleSkip % 2 != 0) {
-        particleSensor.nextSample();
-        continue;
-      }
 
       // Build sample
       Sample s;
       s.ir_arm   = (float)ir;
       s.red_arm  = (float)red;
-      s.t_arm    = tempOK ? tempSensor.getTemperature() : 0.0f;
+      s.t_arm    = t_arm_cached;
 
       // Snapshot latest neck data (zeros until first ESP-NOW packet arrives)
       s.ir_neck  = neckReceived ? latestNeck.ir          : 0.0f;
