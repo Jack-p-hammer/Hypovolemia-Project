@@ -9,6 +9,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from bleak import BleakScanner, BleakClient
 from datetime import datetime, timezone
 from collections import deque
+import numpy as np
 
 
 # =============================================================================
@@ -243,6 +244,28 @@ def hypovolemia_score(signal_deque):
 
 
 # =============================================================================
+# SIGNAL-TO-NOISE RATIO
+# Frequency-domain SNR: signal power is the power in the cardiac band (0.5–4 Hz),
+# noise power is everything above 4 Hz.  Result is in dB — higher is cleaner.
+# Uses the last 2 seconds of data (1000 samples at 500 Hz) for the FFT.
+# =============================================================================
+
+def compute_snr(signal_deque, fs=500, window=1000):
+    """Return SNR in dB, or None if there is not enough data yet."""
+    if len(signal_deque) < window:
+        return None
+    samples = np.array(list(signal_deque)[-window:], dtype=float)
+    samples -= samples.mean()                          # remove DC before FFT
+    fft_power = np.abs(np.fft.rfft(samples)) ** 2
+    freqs     = np.fft.rfftfreq(window, d=1.0 / fs)
+    signal_power = fft_power[(freqs >= 1) & (freqs <= 4.0)].sum()
+    noise_power  = fft_power[freqs > 4.0].sum()
+    if noise_power <= 0:
+        return None
+    return 10 * np.log10(signal_power / noise_power)
+
+
+# =============================================================================
 # DASHBOARD  —  the main UI window
 # =============================================================================
 
@@ -313,11 +336,13 @@ class Dashboard:
         grid.columnconfigure(1, weight=1)
         grid.rowconfigure(0, weight=0)
         grid.rowconfigure(1, weight=1)
+        grid.rowconfigure(2, weight=0)
 
-        self._build_temp_card(grid, row=0, col=0)       # top-left:  temperatures
-        self._build_feedback_card(grid, row=0, col=1)   # top-right: delta-T feedback
-        self._build_ppg_card(grid, row=1, col=0)        # bottom-left:  PPG waveforms
-        self._build_hypo_card(grid, row=1, col=1)       # bottom-right: hypovolemia scores
+        self._build_temp_card(grid, row=0, col=0)              # top-left:  temperatures
+        self._build_feedback_card(grid, row=0, col=1)          # top-right: delta-T feedback
+        self._build_ppg_card(grid, row=1, col=0, rowspan=2)    # left: PPG waveforms (spans rows 1–2)
+        self._build_hypo_card(grid, row=1, col=1)              # right: hypovolemia scores
+        self._build_signal_quality_card(grid, row=2, col=1)    # right: signal quality
 
         # --- Footer strip along the bottom ---
         tk.Frame(self.root, bg=BORDER, height=1).pack(fill="x")
@@ -467,12 +492,12 @@ class Dashboard:
     # CARD: PPG WAVEFORMS
     # -------------------------------------------------------------------------
 
-    def _build_ppg_card(self, parent, row, col):
+    def _build_ppg_card(self, parent, row, col, rowspan=1):
         """
         Live scrolling graph of the raw neck and arm PPG signals.
         The graph shows the last GRAPH_WINDOW_SECONDS seconds of data.
         """
-        card = self._make_card(parent, "PHOTOPLETHYSMOGRAPHY (PPG)", row, col)
+        card = self._make_card(parent, "PHOTOPLETHYSMOGRAPHY (PPG)", row, col, rowspan=rowspan)
 
         # Create a figure with two vertically stacked subplots sharing the x-axis
         self.fig_ppg, (self.ax_neck, self.ax_arm) = plt.subplots(
@@ -514,6 +539,18 @@ class Dashboard:
         self._arm_warning = self.ax_arm.text(
             0.5, 0.5, "Sensor not detecting body\nPlease place on patient",
             transform=self.ax_arm.transAxes, **_warn_style
+        )
+
+        # SNR readouts — top-right corner of each subplot, updated each frame
+        self._snr_neck_text = self.ax_neck.text(
+            0.99, 0.97, "SNR —", transform=self.ax_neck.transAxes,
+            ha="right", va="top", fontsize=7, color=TEXT_MUTED,
+            fontfamily="monospace", zorder=9
+        )
+        self._snr_arm_text = self.ax_arm.text(
+            0.99, 0.97, "SNR —", transform=self.ax_arm.transAxes,
+            ha="right", va="top", fontsize=7, color=TEXT_MUTED,
+            fontfamily="monospace", zorder=9
         )
 
         canvas = FigureCanvasTkAgg(self.fig_ppg, master=card)
@@ -583,6 +620,41 @@ class Dashboard:
                 self._hypo_arm_status_lbl  = status_lbl
 
     # -------------------------------------------------------------------------
+    # CARD: SIGNAL QUALITY
+    # -------------------------------------------------------------------------
+
+    def _build_signal_quality_card(self, parent, row, col):
+        """
+        Two rows showing SNR-based signal quality for neck and arm.
+        GOOD ≥ 10 dB / FAIR 5–10 dB / POOR < 5 dB
+        """
+        card = self._make_card(parent, "SIGNAL QUALITY", row, col)
+
+        self._sq_rows = {}
+        for site in ("NECK SITE", "FOREARM SITE"):
+            row_frame = tk.Frame(card, bg=WHITE,
+                                 highlightbackground=BORDER, highlightthickness=1)
+            row_frame.pack(fill="x", padx=16, pady=6)
+
+            tk.Label(row_frame, text=site,
+                     bg=WHITE, fg=TEXT_MUTED,
+                     font=(FONT_SANS, 10)).pack(side="left", padx=12, pady=8)
+
+            snr_var    = tk.StringVar(value="— dB")
+            status_var = tk.StringVar(value="WAITING")
+
+            tk.Label(row_frame, textvariable=snr_var,
+                     bg=WHITE, fg=TEXT,
+                     font=(FONT_MONO, 12, "bold")).pack(side="left", padx=(0, 10))
+
+            status_lbl = tk.Label(row_frame, textvariable=status_var,
+                                  bg=WHITE, fg=TEXT_MUTED,
+                                  font=(FONT_SANS, 10, "bold"))
+            status_lbl.pack(side="right", padx=12)
+
+            self._sq_rows[site] = (snr_var, status_var, status_lbl)
+
+    # -------------------------------------------------------------------------
     # PERIODIC UPDATES
     # -------------------------------------------------------------------------
 
@@ -600,6 +672,10 @@ class Dashboard:
 
         t_max = all_times[-1]
         t_min = max(0, t_max - GRAPH_WINDOW_SECONDS)
+
+        # Compute SNR for label update below
+        neck_snr = compute_snr(neck_data)
+        arm_snr  = compute_snr(arm_data)
 
         # Filter to only the samples inside the visible time window
         neck_window = [(t, v) for t, v in zip(all_times, all_neck) if t >= t_min]
@@ -632,6 +708,10 @@ class Dashboard:
         self.line_arm.set_color("#aaaaaa" if arm_off_body else RED)
         self.line_neck.set_alpha(0.12 if neck_off_body else 1.0)
         self.line_neck.set_color("#aaaaaa" if neck_off_body else BLUE)
+
+        # Update SNR readouts (neck_snr / arm_snr computed above)
+        self._snr_neck_text.set_text(f"SNR {neck_snr:.1f} dB" if neck_snr is not None else "SNR —")
+        self._snr_arm_text.set_text( f"SNR {arm_snr:.1f} dB"  if arm_snr  is not None else "SNR —")
 
     def _update_ui(self):
         """
@@ -699,6 +779,29 @@ class Dashboard:
         self.hypo_arm_label.set(arm_label)
         self._hypo_arm_score_lbl.configure(fg=arm_color)
         self._hypo_arm_status_lbl.configure(fg=arm_color)
+
+        # Signal quality card
+        def snr_to_quality(snr):
+            if snr is None:               return "— dB",          "WAITING", TEXT_MUTED
+            if snr >= 10:                 return f"{snr:.1f} dB",  "GOOD",    GREEN
+            if snr >= 5:                  return f"{snr:.1f} dB",  "FAIR",    AMBER
+            return                               f"{snr:.1f} dB",  "POOR",    RED
+
+        neck_off_body = 0 < latest["neck"] < FINGER_ON
+        arm_off_body  = latest["connected"] and latest["arm"] < FINGER_ON
+
+        for site, deque_, off_body in (
+            ("NECK SITE",    neck_data, neck_off_body),
+            ("FOREARM SITE", arm_data,  arm_off_body),
+        ):
+            if off_body:
+                snr_val, status_text, status_color = "—", "OFF BODY", TEXT_MUTED
+            else:
+                snr_val, status_text, status_color = snr_to_quality(compute_snr(deque_))
+            snr_var, status_var, status_lbl = self._sq_rows[site]
+            snr_var.set(snr_val)
+            status_var.set(status_text)
+            status_lbl.configure(fg=status_color)
 
         # Connection status indicator in the header
         if latest["connected"]:
